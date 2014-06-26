@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -x
+C_FLAGS="-std=gnu99"
+PROPERTY_FILE=property_file_predator
+PREDATOR_PATH=/home/shooter/FIT/Predator/predator-2013-10-30-d1bd405/sl_build/check-property.sh
+
+$PREDATOR_PATH --propertyfile $PROPERTY_FILE -- $1 -m64 $C_FLAGS
