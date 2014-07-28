@@ -1,3 +1,3 @@
 #!/bin/bash
 
-echo "SAFE"
+echo "FALSE"
