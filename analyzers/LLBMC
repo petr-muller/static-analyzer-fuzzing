@@ -1,0 +1,302 @@
+#!/bin/bash
+
+LLBMC_PATH="/home/shooter/FIT/llbmc-2013.1-Linux_64/bin"
+
+BC_FILE="/tmp/analyzers/llbmc_temp.bc"
+
+
+# define differents sets of LLBMC options
+check_options="--no-custom-assertions --no-div-by-zero-checks --no-memcpy-disjoint-checks --no-memory-allocation-checks --no-overflow-checks --no-shift-checks"
+#check_options="--no-custom-assertions --no-div-by-zero-checks --no-mem*-size-checks --no-memcpy-disjoint-checks --no-memory-allocation-checks --no-overflow-checks --no-shift-checks"
+
+no_free_checks="--no-memory-free-checks"
+no_deref_checks="--no-memory-access-checks"
+leak_check="--leak-check"
+
+#log_level="--log-level=off --result"			#now unused reduces error log to minimum
+other_options="--ignore-missing-function-bodies --ignore-inline-assembly --ignore-undetermined-functions"
+
+function check()
+# takes seven arguments:
+#   1. iter (integer),
+#   2. inlines (integer),
+#   3. error label ("(none)" for none),
+#   4. check frees (boolean [0/1]),
+#   5. check derefs (boolean [0/1],
+#   6. check leak (boolean [0/1])
+# returns:
+#   10 (FALSE) or 11 (FALSE_FREE) or 12 (FALSE_DEREF) or 13 (FALSE_LEAK) or
+#   20 (TRUE) or 30 (LOOP_BOUND) or 40 (INLINE_BOUND) or 50 (UNSUPPORTED) or 60 (LOOP_BOUND and INLINE_BOUND) or 0 (UNKNOWN)
+{
+    iter=$1
+    inlines=$2
+    label=$3
+    check_frees=$4
+    check_derefs=$5
+    check_leak=$6
+
+    #bounds_options="--max-loop-iterations=$iter --max-builtins-iterations=$iter --max-function-call-depth=$inlines"
+    bounds_options="--no-max-loop-iterations-checks"
+    llbmc_options="$other_options $bounds_options $check_options"
+
+    if [ "$label" != "(none)" ]
+    then
+        llbmc_options="$additional_reachability_options $llbmc_options" #--error-label=$label                                       #TODO: labels is not funkcioning
+    else
+        llbmc_options="$llbmc_options"
+    fi
+
+    if [ "$check_frees" -eq 0 ]
+    then
+        llbmc_options="$llbmc_options $no_free_checks"
+    fi
+
+    if [ "$check_derefs" -eq 0 ]
+    then
+        llbmc_options="$llbmc_options $no_deref_checks"
+    fi
+
+    if [ "$check_leak" -eq 1 ]
+    then
+        llbmc_options="$llbmc_options $leak_check"
+    fi   
+    
+    OUTPUT=$(mktemp)
+    
+    result=`$LLBMC_PATH/llbmc "$BC_FILE" $llbmc_options 2>&1 | tee "$OUTPUT"`
+
+    cat "$OUTPUT" >&2
+    rm -f "$OUTPUT"
+
+    if [[ $result =~ "type 17 failed" ]]      # unreachable check failed
+    then
+        return 10   # FALSE
+    elif [[ $result =~ "type 10 failed" || $result =~ "Memory leak." ]]     # unsafe free
+    then
+        return 11   # FALSE_FREE
+    elif [[ $result =~ "type 6 failed" || $result =~ "type 7 failed" ]] # unsafe deref
+    then
+        return 12   # FALSE_DEREF
+    elif [[ $result =~ "type 14 failed" ]]    # unsafe leak
+    then
+        return 13   # FALSE_LEAK
+    elif [[ $result =~ "No error detected." ]]
+    then
+        return 20   # TRUE (but only, if $bounds_check=1)
+    elif [[ $result =~ "No error detected, but loop bound not sufficient." ]]
+    then
+        return 30   # LOOP_BOUND
+    elif [[ $result =~ "type 2 failed" ]]     # max loop bounds check failed
+    then
+        return 30   # LOOP_BOUND
+    elif [[ $result =~ "No error detected, but inlining not sufficient." ]]
+    then
+        return 40   # INLINE_BOUND
+    elif [[ $result =~ "type 1 failed" ]]     # insufficient function call depth
+    then
+        return 40   # INLINE_BOUND
+    elif [[ $result =~ "type 19 failed" ]]    # unsupported function
+    then
+        return 50   # UNSUPPORTED
+    elif [[ $result =~ "No error detected, but unrolling and inlining not sufficient.\n" ]]
+    then
+        return 60   # LOOP_BOUND and INLINE_BOUND
+    elif [[ $result =~ "Error detected." ]]      # unreachable check failed
+    then
+        return 10   # FALSE
+    else
+        return 0    # UNKNOWN
+    fi
+}
+
+# start of main program
+
+#ulimit -s 131072 > /dev/null 2>&1
+
+bit_width=64
+simple_mem=0 #NOT SUPPORTED !!!
+
+source_file="$1"
+property_file="$2"
+
+if [ ! -f "$source_file" ]
+then
+   echo "Cannot open input C file." >&2
+   exit 20
+fi
+
+if [ $simple_mem -eq 1 ]
+then
+    echo "Simple mem is equal to 1, which is unsupported" >&2
+    echo "UNKNOWN"
+    exit 0
+fi
+
+
+error_label="(none)"
+check_frees=0
+check_derefs=0
+check_leak=0
+mem_safety=0
+
+while read line
+do
+    regex_error_label='CHECK\( init\(main\(\)\), LTL\(G ! label\(([a-zA-Z0-9_]*)\)\) \)'
+    regex_valid_free='CHECK\( init\(main\(\)\), LTL\(G valid-free\) \)'
+    regex_valid_deref='CHECK\( init\(main\(\)\), LTL\(G valid-deref\) \)'
+    regex_valid_memtrack='CHECK\( init\(main\(\)\), LTL\(G valid-memtrack\) \)'
+    if [[ $line =~ $regex_error_label ]]
+    then
+        error_label="${BASH_REMATCH[1]}"
+    elif [[ $line =~ $regex_valid_free ]]
+    then
+        check_frees=1
+        mem_safety=1
+    elif [[ $line =~ $regex_valid_deref ]]
+    then
+        check_derefs=1
+        mem_safety=1
+    elif [[ $line =~ $regex_valid_memtrack ]]
+    then
+        check_leak=1
+        mem_safety=1
+    elif [ -n "$line" ]
+    then
+        echo "UNKNOWN"
+        exit 0
+    fi
+done < $property_file
+
+#echo "properities: $error_label $check_frees $check_derefs $check_leak $mem_safety"
+
+
+# compile C program to LLVM IR
+c_opt="-O0"
+
+clang -c -I/usr/include/csmith-2.1.0/ -emit-llvm -std=gnu99 -m$bit_width "$source_file" $c_opt -o "$BC_FILE" -w >&2
+if [ $? -ne 0 ]
+then
+  echo "Clang compilation errors." >&2
+  exit 30
+fi
+
+# run LLBMC
+# max. number of loop iterations / inlines
+iter=0
+inlines=1
+
+while true
+do
+    #printf "{$iter:$inlines}.."
+
+    # no loop bounds and inline checks first
+    check $iter $inlines $error_label $check_frees $check_derefs $check_leak
+    result=$?
+    #echo "result je : $result"
+
+    if [ $result -eq 10 ]   # FALSE
+    then
+        echo "FALSE"
+        break
+    elif [ $result -eq 11 ] # FALSE_FREE
+    then
+        echo "FALSE(valid-free)"
+        break
+    elif [ $result -eq 12 ] # FALSE_DEREF
+    then
+        echo "FALSE(valid-deref)"
+        break
+    elif [ $result -eq 13 ] # FALSE_LEAK
+    then
+        echo "FALSE(valid-memtrack)"
+        break
+    elif [ $result -eq 20 ] # TRUE
+    then
+        echo "TRUE"
+        break
+    elif [ $result -eq 30 -o $result -eq 60 ]
+    then
+        # increase loop bound
+        if [ $mem_safety -eq 0 ]
+        then
+            if [ $iter -eq 0 ]
+            then
+                iter=1
+            elif [ $iter -eq 1 ]
+            then
+                iter=2
+            elif [ $iter -eq 2 ]
+            then
+                iter=5
+            elif [ $iter -eq 5 ]
+            then
+                iter=7
+            elif [ $iter -eq 7 ]
+            then
+                iter=10
+            elif [ $iter -eq 10 ]
+            then
+                iter=11
+            else
+                echo "TRUE"
+                break
+            fi
+        else
+            if [ $iter -eq 0 ]
+            then
+                iter=1
+            elif [ $iter -eq 1 ]
+            then
+                iter=2
+            elif [ $iter -eq 2 ]
+            then
+                iter=3
+            elif [ $iter -eq 3 ]
+            then
+                iter=7
+            elif [ $iter -eq 7 ]
+            then
+                iter=10
+            elif [ $iter -eq 10 ]
+            then
+                iter=20
+            elif [ $iter -eq 20 ]
+            then
+                iter=30
+            elif [ $iter -eq 30 ]
+            then
+                iter=128
+            else
+                echo "TRUE"
+                break
+            fi
+        fi
+    elif [ $result -eq 40 ]
+    then
+        # increase inline limit
+        if [ $inlines -lt 2 ]
+        then
+            inlines=$(dc -e "$inlines 1 + p")
+        else
+            echo "UNKNOWN"
+            break
+        fi
+    elif [ $result -eq 50 ] # UNSUPPORTED
+    then
+        echo "UNKNOWN"
+        break
+    elif [ $result -eq 0 ]  # UNKNOWN
+    then
+        echo "UNKNOWN"
+        break
+    else
+        echo "INTERNAL ERROR"
+        break
+    fi
+
+    # increase loop bound / inline limit
+done
+
+# clean up and exit
+rm -f "$BC_FILE" 2>/dev/null
+exit 1

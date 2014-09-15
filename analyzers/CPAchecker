@@ -1,0 +1,53 @@
+#!/bin/bash
+CPA_PATH="/home/shooter/FIT/CPAchecker-1.3.4-unix/scripts"
+CSMITH_LIB_PATH="/usr/include/csmith-2.1.0/csmith.h"
+
+source_file="$1"
+property_file="$2"
+
+PREPROCESSED_FILE="/tmp/analyzers/cpa_temp.i"
+
+bit_width="64"
+
+
+c_opt="-O0"
+
+if [[ ! "$source_file" =~ \.i$ ]]
+then
+    gcc -c -I/usr/include/csmith-2.1.0/ -std=gnu99 -m$bit_width "$source_file" "$c_opt" -E -o "$PREPROCESSED_FILE" 2>/dev/null
+    if [ $? -ne 0 ]
+    then
+        echo "Compilation errors." #sem doplnit >&2
+        exit 0
+    fi
+    source_file="$PREPROCESSED_FILE"
+fi
+
+
+if [ "$STORE_LOGS" == true ]; then
+    TEE="| tee /dev/fd/2"
+else 
+    TEE=""
+fi
+
+result=$(eval "$CPA_PATH/cpa.sh "-$bit_width" -sv-comp14 -heap 10000M -disable-java-assertions -spec "$property_file" "$source_file" "$TEE"" )
+
+    if [[ $result =~ "Verification result: TRUE" ]]
+    then
+        echo "TRUE"
+    elif [[ $result =~ "Verification result: FALSE" ]]
+    then
+        echo "FALSE"
+    elif [[ $result =~ "Verification result: UNKNOWN" ]]
+    then
+        echo "UNKNOWN"
+    else
+        echo "ERROR()"
+    fi
+
+
+#removing temps
+rm -f "$PREPROCESSED_FILE" 2>/dev/null
+    
+
+exit 1

@@ -1,0 +1,52 @@
+#!/bin/bash
+ 
+source_file="$1"
+property_file="$2"
+
+
+bit_width=64
+
+BLAST_PATH="/home/shooter/FIT/blast-2.7.2/bin"
+
+PREPROCESSED_FILE="/tmp/analyzers/BLAST_temp.i"
+
+c_opt="-O0"
+
+if [[ ! "$source_file" =~ \.i$ ]]
+then
+    gcc -c -I/usr/include/csmith-2.1.0/ -std=gnu99 -m$bit_width "$source_file" "$c_opt" -E -o "$PREPROCESSED_FILE" 2>/dev/null
+    if [ $? -ne 0 ]
+    then
+        echo "Compilation errors." #sem doplnit >&2
+        exit 0
+    fi
+    source_file="$PREPROCESSED_FILE"
+fi
+
+BLAST_OPTIONS="-alias empty -enable-recursion -noprofile -cref -lattice -include-lattice symb -nosserr -errorpathfile errorBLAST"
+
+if [ "$STORE_LOGS" == true ]; then
+	LOGS="3>&1 1>&2 2>&3" # SWAP OF STDERR AN STDOUT using 3rd descriptor
+else 
+	LOGS="2>&1 1>/dev/null"
+fi
+
+result=$(eval "$BLAST_PATH/pblast.opt $BLAST_OPTIONS "$source_file" $LOGS ")
+
+    if [[ $result =~ "No error found.  The system is safe :-)" ]]		# ! there are two spaces between ...
+    then
+        echo "TRUE"
+    elif [[ $result =~ "Fatal error:" ]] 
+    then
+        echo "FALSE"
+    elif [[ $result =~ "Verification result: UNKNOWN" ]]
+    then
+        echo "UNKNOWN"
+    els
+        echo "ERROR()"
+    fi
+
+#removing temps and property file
+rm -f "$PREPROCESSED_FILE" 2>/dev/null
+
+exit 1
