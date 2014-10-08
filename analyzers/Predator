@@ -1,0 +1,12 @@
+#!/bin/sh
+
+source_file="$1"
+property_file="$2"
+
+
+C_FLAGS="-std=gnu99 -I/usr/include/csmith-2.1.0/"
+
+PREDATOR_PATH="/home/shooter/FIT/Predator/predator-2013-10-30-d1bd405/sl_build/check-property.sh"
+
+$PREDATOR_PATH --propertyfile "$property_file" -- "$source_file" -m64 $C_FLAGS
+
